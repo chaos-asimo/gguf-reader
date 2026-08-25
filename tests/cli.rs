@@ -4,6 +4,7 @@ mod common;
 
 use common::*;
 use std::process::Command;
+use std::string::ToString;
 
 /// 获取当前目录下的 target 中 gguf-dump 可执行文件路径。
 fn bin_path() -> std::path::PathBuf {
@@ -226,4 +227,239 @@ fn test_cli_json_array_truncation() {
     assert_eq!(arr["total"], 1500);
     // 实际只保留前 1000 项
     assert_eq!(arr["value"].as_array().unwrap().len(), 1000);
+}
+
+/// --quiet 仅输出摘要，不含 KV 列表与张量列表。
+#[test]
+fn test_cli_quiet() {
+    let buf = sample_gguf();
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+    let out = Command::new(&bin)
+        .arg("--quiet")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("Architecture"), "quiet 应含摘要");
+    assert!(
+        !stdout.contains("Key-Value Metadata"),
+        "quiet 不应含 KV 列表"
+    );
+    assert!(!stdout.contains("Tensors (showing"), "quiet 不应含张量列表");
+    assert!(!stdout.contains("token_embd.weight"), "quiet 不应含张量名");
+}
+
+/// 短选项 -q 等价于 --quiet。
+#[test]
+fn test_cli_quiet_short_flag() {
+    let buf = sample_gguf();
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+    let out = Command::new(&bin)
+        .arg("-q")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("Key-Value Metadata"));
+}
+
+/// --tensors-all 显示全部张量（默认截断前 50）。
+#[test]
+fn test_cli_tensors_all() {
+    // 构造 60 个张量
+    let kv = Vec::new();
+    let dims: [i64; 2] = [1, 1];
+    let tensors: Vec<(&str, &[i64], i32, u64)> = (0..60)
+        .map(|i| {
+            (
+                format!("t{i:02}").leak() as &str,
+                &dims as &[i64],
+                0i32,
+                i as u64 * 4,
+            )
+        })
+        .collect();
+    let buf = build_gguf_buffer(&kv, 0, &tensors, 0);
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+
+    // 默认：仅前 50
+    let out = Command::new(&bin).arg(&path).output().expect("run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("showing first 50 of 60"), "默认应截断 50");
+    assert!(!stdout.contains("t59"), "默认不应含第 60 个张量");
+
+    // --tensors-all：全部 60
+    let out = Command::new(&bin)
+        .arg("--tensors-all")
+        .arg(&path)
+        .output()
+        .expect("run");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("showing first 60 of 60"),
+        "tensors-all 应显示全部"
+    );
+    assert!(stdout.contains("t59"), "tensors-all 应含第 60 个张量");
+}
+
+/// --max-kv 限制 KV 显示数量（默认 200）。
+#[test]
+fn test_cli_max_kv() {
+    // 构造 5 个 KV，限制显示 2 个
+    let mut kv = Vec::new();
+    for i in 0..5 {
+        write_scalar_kv(&mut kv, &format!("k{i}"), 4, &(i as u32).to_le_bytes());
+    }
+    let tensors: Vec<(&str, &[i64], i32, u64)> = vec![];
+    let buf = build_gguf_buffer(&kv, 5, &tensors, 0);
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+
+    let out = Command::new(&bin)
+        .arg("--max-kv")
+        .arg("2")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // 前 2 个键应显示
+    assert!(stdout.contains("k0"));
+    assert!(stdout.contains("k1"));
+    // 第 3 个及以后不应显示，但应有 "more keys" 提示
+    assert!(!stdout.contains("k2"));
+    assert!(stdout.contains("more keys"));
+}
+
+/// 短选项 -m 等价于 --max-kv。
+#[test]
+fn test_cli_max_kv_short_flag() {
+    let mut kv = Vec::new();
+    for i in 0..5 {
+        write_scalar_kv(&mut kv, &format!("k{i}"), 4, &(i as u32).to_le_bytes());
+    }
+    let tensors: Vec<(&str, &[i64], i32, u64)> = vec![];
+    let buf = build_gguf_buffer(&kv, 5, &tensors, 0);
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+
+    let out = Command::new(&bin)
+        .arg("-m")
+        .arg("1")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("k0"));
+    assert!(!stdout.contains("k1"));
+}
+
+/// 多次 --key 过滤：仅显示匹配的多个键。
+#[test]
+fn test_cli_multiple_key_filter() {
+    let buf = sample_gguf();
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+    let out = Command::new(&bin)
+        .arg("--key")
+        .arg("general.architecture")
+        .arg("--key")
+        .arg("llama.block_count")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("general.architecture"));
+    assert!(stdout.contains("llama.block_count"));
+    // 未匹配的键不应出现
+    assert!(!stdout.contains("general.name"));
+}
+
+/// --help 输出包含主要选项说明，退出码 0。
+#[test]
+fn test_cli_help() {
+    let bin = bin_path();
+    let out = Command::new(&bin).arg("--help").output().expect("run");
+    assert!(out.status.success(), "--help 应退出 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--json"));
+    assert!(stdout.contains("--key"));
+    assert!(stdout.contains("--max-kv"));
+    assert!(stdout.contains("--summary-only"));
+    assert!(stdout.contains("--quiet"));
+    assert!(stdout.contains("--tensors-all"));
+    assert!(stdout.contains("--pretty"));
+}
+
+/// --version 输出版本号，退出码 0。
+#[test]
+fn test_cli_version() {
+    let bin = bin_path();
+    let out = Command::new(&bin).arg("--version").output().expect("run");
+    assert!(out.status.success(), "--version 应退出 0");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    // Cargo.toml version = "0.1.0"
+    assert!(stdout.contains("0.1.0"), "应含版本号，实际: {stdout}");
+}
+
+/// JSON 模式下 --key 过滤同样生效。
+#[test]
+fn test_cli_json_key_filter() {
+    let buf = sample_gguf();
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+    let out = Command::new(&bin)
+        .arg("--json")
+        .arg("--key")
+        .arg("llama.block_count")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    // 仅含被过滤的键
+    assert!(v["kv"].get("llama.block_count").is_some());
+    assert!(v["kv"].get("general.architecture").is_none());
+    assert!(v["kv"].get("general.name").is_none());
+    // header / tensors 仍完整
+    assert_eq!(v["header"]["version"], 3);
+    assert_eq!(v["tensors"].as_array().unwrap().len(), 2);
+}
+
+/// 短选项 -j 等价于 --json。
+#[test]
+fn test_cli_json_short_flag() {
+    let buf = sample_gguf();
+    let (_dir, path) = write_temp_gguf(&buf);
+    let bin = bin_path();
+    let out = Command::new(&bin)
+        .arg("-j")
+        .arg(&path)
+        .output()
+        .expect("run");
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid json");
+    assert_eq!(v["architecture"], "llama");
+}
+
+/// 无参数运行：clap 报错，退出码非 0。
+#[test]
+fn test_cli_no_args() {
+    let bin = bin_path();
+    let out = Command::new(&bin).output().expect("run");
+    assert!(!out.status.success(), "无参数应失败");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("path") || stderr.contains("required"),
+        "应提示缺少 path"
+    );
 }

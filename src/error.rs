@@ -86,3 +86,86 @@ impl From<std::io::Error> for GgufError {
 
 /// 解析结果类型别名。
 pub type GgufResult<T> = Result<T, GgufError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 各错误变体的 Display 文本包含关键信息。
+    #[test]
+    fn test_display_messages() {
+        let e = GgufError::InvalidMagic(0x12345678);
+        assert!(e.to_string().contains("0x12345678"));
+        assert!(e.to_string().contains("0x46554747"));
+
+        let e = GgufError::UnsupportedVersion(7);
+        assert!(e.to_string().contains("7"));
+        assert!(e.to_string().contains("expected 3"));
+
+        let e = GgufError::OutOfBounds {
+            offset: 10,
+            required: 8,
+            file_size: 16,
+        };
+        assert!(e.to_string().contains("10"));
+        assert!(e.to_string().contains("8"));
+        assert!(e.to_string().contains("16"));
+
+        let e = GgufError::InvalidGgufType(99);
+        assert!(e.to_string().contains("99"));
+
+        let e = GgufError::InvalidArrayElemType(9);
+        assert!(e.to_string().contains("9"));
+        assert!(e.to_string().contains("nested"));
+
+        let e = GgufError::InvalidStringLength(42);
+        assert!(e.to_string().contains("42"));
+
+        let e = GgufError::InvalidTensorDim {
+            name: "tok".into(),
+            dim: -3,
+        };
+        assert!(e.to_string().contains("tok"));
+        assert!(e.to_string().contains("-3"));
+
+        let e = GgufError::InvalidCount {
+            field: "n_kv",
+            value: -1,
+        };
+        assert!(e.to_string().contains("n_kv"));
+        assert!(e.to_string().contains("-1"));
+
+        let e = GgufError::Mmap("boom".into());
+        assert!(e.to_string().contains("boom"));
+
+        let e = GgufError::Other("custom".into());
+        assert_eq!(e.to_string(), "custom");
+    }
+
+    /// Io 错误实现 std::error::Error 的 source()，其余变体返回 None。
+    #[test]
+    fn test_error_source() {
+        use std::error::Error as _;
+        let io = GgufError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "no file"));
+        assert!(io.source().is_some());
+
+        let magic = GgufError::InvalidMagic(0);
+        assert!(magic.source().is_none());
+
+        let oob = GgufError::OutOfBounds {
+            offset: 0,
+            required: 1,
+            file_size: 0,
+        };
+        assert!(oob.source().is_none());
+    }
+
+    /// From<io::Error> 自动转换为 GgufError::Io。
+    #[test]
+    fn test_from_io_error() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
+        let g: GgufError = io_err.into();
+        assert!(matches!(g, GgufError::Io(_)));
+        assert!(g.to_string().contains("denied"));
+    }
+}

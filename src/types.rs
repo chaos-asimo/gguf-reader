@@ -509,4 +509,172 @@ mod tests {
         assert_eq!(format_finite(3.0), "3.0");
         assert_eq!(format_finite(3.5), "3.5");
     }
+
+    /// 13 个标量变体的 value_type 全量核对。
+    #[test]
+    fn test_value_type_all_variants() {
+        assert_eq!(GgufValue::U8(0).value_type(), GgufType::Uint8);
+        assert_eq!(GgufValue::I8(0).value_type(), GgufType::Int8);
+        assert_eq!(GgufValue::U16(0).value_type(), GgufType::Uint16);
+        assert_eq!(GgufValue::I16(0).value_type(), GgufType::Int16);
+        assert_eq!(GgufValue::U32(0).value_type(), GgufType::Uint32);
+        assert_eq!(GgufValue::I32(0).value_type(), GgufType::Int32);
+        assert_eq!(GgufValue::F32(0.0).value_type(), GgufType::F32);
+        assert_eq!(GgufValue::Bool(true).value_type(), GgufType::Bool);
+        assert_eq!(GgufValue::String("".into()).value_type(), GgufType::String);
+        assert_eq!(GgufValue::U64(0).value_type(), GgufType::Uint64);
+        assert_eq!(GgufValue::I64(0).value_type(), GgufType::Int64);
+        assert_eq!(GgufValue::F64(0.0).value_type(), GgufType::F64);
+    }
+
+    /// as_str / as_bool 对非目标变体应返回 None。
+    #[test]
+    fn test_as_str_as_bool_negative() {
+        assert!(GgufValue::U32(1).as_str().is_none());
+        assert!(GgufValue::Bool(true).as_str().is_none());
+        assert!(GgufValue::U32(1).as_bool().is_none());
+        assert!(GgufValue::String("x".into()).as_bool().is_none());
+        assert_eq!(GgufValue::Bool(false).as_bool(), Some(false));
+        assert_eq!(GgufValue::String("ok".into()).as_str(), Some("ok"));
+    }
+
+    /// 浮点 NaN / Inf 在 display 中的字符串表示。
+    #[test]
+    fn test_display_f32_f64_special() {
+        assert_eq!(GgufValue::F32(f32::NAN).display(), "NaN");
+        assert_eq!(GgufValue::F32(f32::INFINITY).display(), "+Inf");
+        assert_eq!(GgufValue::F32(f32::NEG_INFINITY).display(), "-Inf");
+        assert_eq!(GgufValue::F64(f64::NAN).display(), "NaN");
+        assert_eq!(GgufValue::F64(1.25).display(), "1.25");
+        assert_eq!(GgufValue::F64(2.0).display(), "2.0");
+    }
+
+    /// 各标量类型的 Display 文本（用于 CLI 类型列）。
+    #[test]
+    fn test_gguf_type_display() {
+        assert_eq!(GgufType::Uint8.to_string(), "uint8");
+        assert_eq!(GgufType::Int64.to_string(), "int64");
+        assert_eq!(GgufType::F32.to_string(), "float32");
+        assert_eq!(GgufType::F64.to_string(), "float64");
+        assert_eq!(GgufType::Bool.to_string(), "bool");
+        assert_eq!(GgufType::String.to_string(), "string");
+        assert_eq!(GgufType::Array.to_string(), "array");
+    }
+
+    /// 未知 ggml 类型的 Display（数值原样输出）。
+    #[test]
+    fn test_ggml_type_display_unknown() {
+        assert_eq!(GgmlType::F32.to_string(), "F32");
+        assert_eq!(GgmlType::Q4_K.to_string(), "Q4_K");
+        assert_eq!(GgmlType::BF16.to_string(), "BF16");
+        assert_eq!(GgmlType::Unknown(-3).to_string(), "UnknownType(-3)");
+    }
+
+    /// is_floating_point 仅对 F32/F16/BF16 成立。
+    #[test]
+    fn test_is_floating_point() {
+        assert!(GgmlType::F32.is_floating_point());
+        assert!(GgmlType::F16.is_floating_point());
+        assert!(GgmlType::BF16.is_floating_point());
+        assert!(!GgmlType::Q4_0.is_floating_point());
+        assert!(!GgmlType::Q8_K.is_floating_point());
+        assert!(!GgmlType::Unknown(99).is_floating_point());
+    }
+
+    /// as_i64 覆盖全部整数变体（含边界值）。
+    #[test]
+    fn test_as_i64_all_int_variants() {
+        assert_eq!(GgufValue::U8(u8::MAX).as_i64(), Some(255));
+        assert_eq!(GgufValue::I8(i8::MIN).as_i64(), Some(-128));
+        assert_eq!(GgufValue::U16(u16::MAX).as_i64(), Some(65535));
+        assert_eq!(GgufValue::I16(i16::MIN).as_i64(), Some(-32768));
+        assert_eq!(GgufValue::U32(u32::MAX).as_i64(), Some(4294967295));
+        assert_eq!(GgufValue::I32(i32::MIN).as_i64(), Some(-2147483648));
+        assert_eq!(GgufValue::U64(0).as_i64(), Some(0));
+        assert_eq!(GgufValue::U64(u64::MAX).as_i64(), None); // 超出 i64 范围
+        assert_eq!(GgufValue::I64(i64::MAX).as_i64(), Some(i64::MAX));
+    }
+
+    #[cfg(feature = "json")]
+    mod json_tests {
+        use super::*;
+
+        /// 标量值序列化为 JSON（整数保持 number，浮点保持 number）。
+        #[test]
+        fn test_value_to_json_scalars() {
+            use serde_json::json;
+            assert_eq!(value_to_json(&GgufValue::U8(7), None), json!(7));
+            assert_eq!(value_to_json(&GgufValue::I8(-5), None), json!(-5));
+            assert_eq!(value_to_json(&GgufValue::U16(65535), None), json!(65535));
+            assert_eq!(value_to_json(&GgufValue::I16(-1234), None), json!(-1234));
+            assert_eq!(
+                value_to_json(&GgufValue::U32(0xDEADBEEF), None),
+                json!(0xDEADBEEFu32)
+            );
+            assert_eq!(value_to_json(&GgufValue::I32(-99999), None), json!(-99999));
+            assert_eq!(value_to_json(&GgufValue::U64(1), None), json!(1));
+            assert_eq!(
+                value_to_json(&GgufValue::I64(-12345678901234), None),
+                json!(-12345678901234i64)
+            );
+            assert_eq!(value_to_json(&GgufValue::Bool(true), None), json!(true));
+            assert_eq!(value_to_json(&GgufValue::Bool(false), None), json!(false));
+            assert_eq!(
+                value_to_json(&GgufValue::String("hi".into()), None),
+                json!("hi")
+            );
+            // 浮点：JSON number 比较用 as_f64
+            let f32 = value_to_json(&GgufValue::F32(1.5), None);
+            assert_eq!(f32.as_f64(), Some(1.5));
+            let f64 = value_to_json(&GgufValue::F64(2.25), None);
+            assert_eq!(f64.as_f64(), Some(2.25));
+        }
+
+        /// 小数组（未超阈值）：不截断，无 truncated 字段。
+        #[test]
+        fn test_value_to_json_small_array() {
+            use serde_json::json;
+            let arr = GgufValue::Array(GgufArray {
+                elem_type: GgufType::Uint32,
+                data: vec![GgufValue::U32(1), GgufValue::U32(2), GgufValue::U32(3)],
+            });
+            let v = value_to_json(&arr, Some(1000));
+            assert_eq!(v["element_type"], "uint32");
+            assert_eq!(v["count"], 3);
+            assert_eq!(v["value"], json!([1, 2, 3]));
+            assert!(v.get("truncated").is_none());
+        }
+
+        /// 大数组（超阈值）：截断并标记 truncated=true 与 total。
+        #[test]
+        fn test_value_to_json_truncated_array() {
+            let data: Vec<GgufValue> = (0..1500).map(|i| GgufValue::U32(i as u32)).collect();
+            let arr = GgufValue::Array(GgufArray {
+                elem_type: GgufType::Uint32,
+                data,
+            });
+            let v = value_to_json(&arr, Some(1000));
+            assert_eq!(v["count"], 1500);
+            assert_eq!(v["truncated"], true);
+            assert_eq!(v["total"], 1500);
+            let shown = v["value"].as_array().unwrap();
+            assert_eq!(shown.len(), 1000);
+            assert_eq!(shown[0], serde_json::json!(0));
+            assert_eq!(shown[999], serde_json::json!(999));
+        }
+
+        /// max_array_elements=None 表示不截断。
+        #[test]
+        fn test_value_to_json_no_limit() {
+            let data: Vec<GgufValue> = (0..50).map(|i| GgufValue::U8(i as u8)).collect();
+            let arr = GgufValue::Array(GgufArray {
+                elem_type: GgufType::Uint8,
+                data,
+            });
+            let v = value_to_json(&arr, None);
+            assert_eq!(v["count"], 50);
+            assert_eq!(v["value"].as_array().unwrap().len(), 50);
+            assert!(v.get("truncated").is_none());
+        }
+    }
 }

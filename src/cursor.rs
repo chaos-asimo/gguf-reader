@@ -206,4 +206,83 @@ mod tests {
         let mut c = Cursor::new(&buf);
         assert!(matches!(c.string(), Err(GgufError::InvalidStringLength(_))));
     }
+
+    /// pos() 随读取推进，remaining() 相应递减。
+    #[test]
+    fn test_pos_advances() {
+        let buf = [1u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let mut c = Cursor::new(&buf);
+        assert_eq!(c.pos(), 0);
+        assert_eq!(c.remaining(), 10);
+        assert_eq!(c.total_len(), 10);
+        c.u8().unwrap();
+        assert_eq!(c.pos(), 1);
+        assert_eq!(c.remaining(), 9);
+        c.u32().unwrap();
+        assert_eq!(c.pos(), 5);
+        assert_eq!(c.remaining(), 5);
+        // 仅剩 5 字节，读 u64 应失败
+        assert!(matches!(c.u64(), Err(GgufError::OutOfBounds { .. })));
+        assert_eq!(c.pos(), 5); // 失败后 pos 不推进
+        assert_eq!(c.remaining(), 5);
+    }
+
+    /// 空 buffer 上各标量读取均应返回 OutOfBounds（不 panic）。
+    #[test]
+    fn test_empty_buffer_all_reads_fail() {
+        let buf: [u8; 0] = [];
+        let mut c = Cursor::new(&buf);
+        assert!(matches!(c.u8(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.i8(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.bool(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.u16(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.i16(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.u32(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.i32(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.f32(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.u64(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.i64(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.f64(), Err(GgufError::OutOfBounds { .. })));
+        assert!(matches!(c.string(), Err(GgufError::OutOfBounds { .. })));
+    }
+
+    /// 不足字节数的读取返回 OutOfBounds（如 1 字节读 u32）。
+    #[test]
+    fn test_partial_read_fails() {
+        let buf = [1u8, 2, 3]; // 3 字节
+        let mut c = Cursor::new(&buf);
+        assert!(matches!(c.u32(), Err(GgufError::OutOfBounds { .. })));
+        // pos 不应推进
+        assert_eq!(c.pos(), 0);
+    }
+
+    /// bool 读取：0 → false，非 0 → true。
+    #[test]
+    fn test_bool_variants() {
+        let mut c = Cursor::new(&[0u8]);
+        assert!(!c.bool().unwrap());
+        let mut c = Cursor::new(&[255u8]);
+        assert!(c.bool().unwrap());
+        let mut c = Cursor::new(&[1u8]);
+        assert!(c.bool().unwrap());
+    }
+
+    /// 多字节小端解析正确性（u16/u32/u64 高低字节）。
+    #[test]
+    fn test_little_endian_order() {
+        // u16: [0x34, 0x12] → 0x1234
+        let mut c = Cursor::new(&[0x34, 0x12]);
+        assert_eq!(c.u16().unwrap(), 0x1234);
+        // u32: [0xEF, 0xBE, 0xAD, 0xDE] → 0xDEADBEEF
+        let mut c = Cursor::new(&[0xEF, 0xBE, 0xAD, 0xDE]);
+        assert_eq!(c.u32().unwrap(), 0xDEAD_BEEF);
+        // i32 负值
+        let neg = (-1i32).to_le_bytes();
+        let mut c = Cursor::new(&neg);
+        assert_eq!(c.i32().unwrap(), -1);
+        // u64
+        let u64b = 0x0102030405060708u64.to_le_bytes();
+        let mut c = Cursor::new(&u64b);
+        assert_eq!(c.u64().unwrap(), 0x0102030405060708);
+    }
 }

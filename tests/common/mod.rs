@@ -3,6 +3,10 @@
 //! 提供低层字节构造原语（write_str / write_scalar_kv / write_array_kv）
 //! 与高层缓冲构造（build_gguf_buffer）。
 
+// 共享模块被多个测试二进制 `mod common` 引入，部分原语仅被个别二进制使用，
+// 在其余二进制中会触发 dead_code 警告，故统一 allow。
+#![allow(dead_code)]
+
 /// 写入 GGUF 字符串（uint64 长度前缀 + 字节）。
 pub fn write_str(buf: &mut Vec<u8>, s: &str) {
     let b = s.as_bytes();

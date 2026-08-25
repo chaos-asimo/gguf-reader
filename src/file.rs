@@ -482,4 +482,163 @@ mod tests {
             Err(GgufError::InvalidCount { .. })
         ));
     }
+
+    /// 张量维度数 > 8 应返回 InvalidTensorDim（dim=-1 标记）。
+    #[test]
+    fn test_tensor_dims_too_many() {
+        // 9 个维度，每个 1
+        let dims = vec![1i64; 9];
+        let kvs: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> =
+            vec![("t".as_bytes().to_vec(), dims, 0i32, 0u64)];
+        let buf = build_test_gguf(&kvs, &tensors);
+        let err = GgufFile::from_buffer(&buf).unwrap_err();
+        assert!(matches!(
+            err,
+            GgufError::InvalidTensorDim { name: _, dim: -1 }
+        ));
+    }
+
+    /// 0 维张量（标量）合法：shape 为空，num_elements=1。
+    #[test]
+    fn test_tensor_zero_dims() {
+        let kvs: Vec<(Vec<u8>, Vec<u8>)> = vec![];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> =
+            vec![("s".as_bytes().to_vec(), Vec::<i64>::new(), 0i32, 0u64)];
+        let buf = build_test_gguf(&kvs, &tensors);
+        let f = GgufFile::from_buffer(&buf).unwrap();
+        assert_eq!(f.tensors[0].name, "s");
+        assert!(f.tensors[0].shape.is_empty());
+        assert_eq!(f.tensors[0].num_elements(), 1);
+    }
+
+    /// 5 维与 8 维张量合法（≤8 边界）。
+    #[test]
+    fn test_tensor_high_dims() {
+        let dims5 = vec![2i64, 3, 4, 5, 6];
+        let dims8 = vec![1i64, 2, 3, 4, 5, 6, 7, 8];
+        // 手工构造两个张量（build_test_gguf 也支持，但这里直接控制字节）
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&GGUF_VERSION.to_le_bytes());
+        buf.extend_from_slice(&2i64.to_le_bytes()); // n_tensors
+        buf.extend_from_slice(&0i64.to_le_bytes()); // n_kv
+        for (name, dims) in [("a", &dims5), ("b", &dims8)] {
+            write_str(&mut buf, name.as_bytes());
+            buf.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+            for d in dims {
+                buf.extend_from_slice(&d.to_le_bytes());
+            }
+            buf.extend_from_slice(&0i32.to_le_bytes()); // dtype F32
+            buf.extend_from_slice(&0u64.to_le_bytes()); // offset
+        }
+        let f = GgufFile::from_buffer(&buf).unwrap();
+        assert_eq!(f.tensors[0].shape, vec![2u64, 3, 4, 5, 6]);
+        assert_eq!(f.tensors[1].shape, vec![1u64, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    /// general.alignment = 0 应回退到默认 32。
+    #[test]
+    fn test_alignment_zero_falls_back() {
+        let kvs = vec![kv_u32("general.alignment", 0)];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> = vec![];
+        let buf = build_test_gguf(&kvs, &tensors);
+        let f = GgufFile::from_buffer(&buf).unwrap();
+        assert_eq!(f.alignment, GGUF_DEFAULT_ALIGNMENT);
+    }
+
+    /// n_kv 声称超过文件大小的合理性上限应报 InvalidCount。
+    #[test]
+    fn test_n_kv_exceeds_file_size() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&GGUF_VERSION.to_le_bytes());
+        buf.extend_from_slice(&0i64.to_le_bytes()); // n_tensors
+        buf.extend_from_slice(&1000000i64.to_le_bytes()); // n_kv 远超文件大小
+        let err = GgufFile::from_buffer(&buf).unwrap_err();
+        assert!(matches!(err, GgufError::InvalidCount { .. }));
+    }
+
+    /// n_tensors 负值应报 InvalidCount。
+    #[test]
+    fn test_negative_n_tensors() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        buf.extend_from_slice(&GGUF_VERSION.to_le_bytes());
+        buf.extend_from_slice(&(-5i64).to_le_bytes());
+        buf.extend_from_slice(&0i64.to_le_bytes());
+        assert!(matches!(
+            GgufFile::from_buffer(&buf),
+            Err(GgufError::InvalidCount {
+                field: "n_tensors",
+                ..
+            })
+        ));
+    }
+
+    /// from_reader 与 from_buffer 等价（用 Cursor 模拟 Read+Seek）。
+    #[test]
+    fn test_from_reader() {
+        use std::io::Cursor as IoCursor;
+        let kvs = vec![kv_str("general.architecture", "bert")];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> =
+            vec![("t".as_bytes().to_vec(), vec![8], 0, 0)];
+        let buf = build_test_gguf(&kvs, &tensors);
+        let f = GgufFile::from_reader(IoCursor::new(buf.clone())).unwrap();
+        assert_eq!(f.architecture(), Some("bert"));
+        assert_eq!(f.file_size, buf.len() as u64);
+        assert_eq!(f.header.n_tensors, 1);
+    }
+
+    /// from_reader 对损坏数据同样返回错误。
+    #[test]
+    fn test_from_reader_corrupt() {
+        use std::io::Cursor as IoCursor;
+        let bad = vec![0x00u8; 24]; // magic 不对
+        let err = GgufFile::from_reader(IoCursor::new(bad)).unwrap_err();
+        assert!(matches!(err, GgufError::InvalidMagic(_)));
+    }
+
+    /// from_path 成功解析真实临时文件，并与 from_buffer 一致。
+    #[test]
+    fn test_from_path_roundtrip() {
+        let kvs = vec![
+            kv_str("general.architecture", "llama"),
+            kv_str("general.name", "PathModel"),
+        ];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> =
+            vec![("w".as_bytes().to_vec(), vec![16, 16], 0, 0)];
+        let buf = build_test_gguf(&kvs, &tensors);
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("path_test.gguf");
+        std::fs::write(&path, &buf).unwrap();
+
+        let f = GgufFile::from_path(&path).unwrap();
+        assert_eq!(f.architecture(), Some("llama"));
+        assert_eq!(f.model_name(), Some("PathModel"));
+        assert_eq!(f.file_size, buf.len() as u64);
+        assert_eq!(f.tensors.len(), 1);
+    }
+
+    /// from_path 对不存在的文件返回 Io 错误。
+    #[test]
+    fn test_from_path_missing() {
+        let err = GgufFile::from_path("/nonexistent/definitely_missing.gguf").unwrap_err();
+        assert!(matches!(err, GgufError::Io(_)));
+    }
+
+    /// data_offset 对齐上取整的正确性（手工计算）。
+    #[test]
+    fn test_data_offset_alignment_math() {
+        // 构造已知 meta_end 的缓冲，验证 data_offset 是 alignment 的倍数
+        let kvs = vec![kv_u32("general.alignment", 8)];
+        let tensors: Vec<(Vec<u8>, Vec<i64>, i32, u64)> =
+            vec![("x".as_bytes().to_vec(), vec![1], 0, 0)];
+        let buf = build_test_gguf(&kvs, &tensors);
+        let f = GgufFile::from_buffer(&buf).unwrap();
+        assert_eq!(f.alignment, 8);
+        assert_eq!(f.data_offset % 8, 0);
+        assert!(f.data_offset >= f.file_size);
+    }
 }
