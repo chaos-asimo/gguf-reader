@@ -77,7 +77,7 @@ gguf-dump [OPTIONS] <PATH>
 | `<PATH>` | GGUF 文件路径 |
 | `-j, --json` | 以 JSON 格式输出（默认文本） |
 | `--pretty` | JSON 美化输出（仅对 `--json` 有意义） |
-| `--tensors-all` | 文本模式下显示全部张量（默认截断前 50） |
+| `-t, --tensors-all` | 文本模式下显示全部张量（默认截断前 50） |
 | `-m, --max-kv <N>` | 文本模式下 KV 显示上限（默认 200） |
 | `-k, --key <KEY>` | 仅显示指定键的 KV 值（可多次指定） |
 | `--summary-only` | 仅显示文件摘要 |

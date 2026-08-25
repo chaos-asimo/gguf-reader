@@ -19,7 +19,7 @@ struct Args {
     pretty: bool,
 
     /// 文本模式下显示全部张量（默认截断前 50）
-    #[arg(long)]
+    #[arg(short = 't', long)]
     tensors_all: bool,
 
     /// 文本模式下 KV 显示上限（默认 200）
