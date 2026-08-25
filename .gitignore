@@ -1,0 +1,10 @@
+# 构建产物
+/target/
+
+# 测试用下载的大型模型文件
+*.gguf
+
+# 编辑器 / IDE
+.idea/
+.vscode/
+*.swp
