@@ -132,13 +132,13 @@ impl GgmlType {
             8 => GgmlType::Q8_0,
             9 => GgmlType::Q8_1,
             10 => GgmlType::Q2_K,
-            11 => GgmlType::Q3_K_L,
-            12 => GgmlType::Q3_K_M,
-            13 => GgmlType::Q3_K_S,
-            14 => GgmlType::Q4_K,
-            15 => GgmlType::Q5_K,
-            16 => GgmlType::Q6_K,
-            17 => GgmlType::Q8_K,
+            // GGUF 只有一个 Q3_K 类型（值 11）。deq_q3_k_s 与 deq_q3_k_l 布局相同，
+            // 此处映射到 Q3_K_S；Q3_K_M（值 114B/block）需通过 infer_k_quant_dtype 推断。
+            11 => GgmlType::Q3_K_S,
+            12 => GgmlType::Q4_K,
+            13 => GgmlType::Q5_K,
+            14 => GgmlType::Q6_K,
+            15 => GgmlType::Q8_K,
             18 => GgmlType::IQ2_XXS,
             19 => GgmlType::IQ2_XS,
             20 => GgmlType::IQ3_XXS,
@@ -175,6 +175,48 @@ impl GgmlType {
     /// 是否属于可精确估算逐元素大小的类型（F32/F16/BF16）。
     pub fn is_floating_point(self) -> bool {
         matches!(self, GgmlType::F32 | GgmlType::F16 | GgmlType::BF16)
+    }
+
+    /// 量化 block 大小（每 block 覆盖的元素数）。
+    /// 浮点类型返回 1。未知类型返回 None。
+    pub fn block_size(self) -> Option<u64> {
+        match self {
+            GgmlType::F32 | GgmlType::F16 | GgmlType::BF16 => Some(1),
+            GgmlType::Q4_0 | GgmlType::Q4_1 | GgmlType::Q5_0 | GgmlType::Q5_1 | GgmlType::Q8_0 => {
+                Some(32)
+            }
+            GgmlType::Q2_K
+            | GgmlType::Q3_K_S
+            | GgmlType::Q3_K_M
+            | GgmlType::Q3_K_L
+            | GgmlType::Q4_K
+            | GgmlType::Q5_K
+            | GgmlType::Q6_K
+            | GgmlType::Q8_K => Some(256),
+            _ => None,
+        }
+    }
+
+    /// 单个 block 的字节数。
+    /// 浮点类型返回元素字节数。未知类型返回 None。
+    pub fn block_bytes(self) -> Option<u64> {
+        match self {
+            GgmlType::F32 => Some(4),
+            GgmlType::F16 | GgmlType::BF16 => Some(2),
+            GgmlType::Q4_0 => Some(18),
+            GgmlType::Q4_1 => Some(20),
+            GgmlType::Q5_0 => Some(22),
+            GgmlType::Q5_1 => Some(24),
+            GgmlType::Q8_0 => Some(34),
+            GgmlType::Q2_K => Some(84),
+            GgmlType::Q3_K_S | GgmlType::Q3_K_L => Some(110),
+            GgmlType::Q3_K_M => Some(114),
+            GgmlType::Q4_K => Some(144),
+            GgmlType::Q5_K => Some(176),
+            GgmlType::Q6_K => Some(210),
+            GgmlType::Q8_K => Some(292),
+            _ => None,
+        }
     }
 }
 
@@ -579,6 +621,51 @@ mod tests {
         assert!(!GgmlType::Q4_0.is_floating_point());
         assert!(!GgmlType::Q8_K.is_floating_point());
         assert!(!GgmlType::Unknown(99).is_floating_point());
+    }
+
+    /// block_size / block_bytes 对所有支持类型返回正确值。
+    #[test]
+    fn test_ggml_type_block_size_bytes() {
+        // 浮点
+        assert_eq!(GgmlType::F32.block_size(), Some(1));
+        assert_eq!(GgmlType::F32.block_bytes(), Some(4));
+        assert_eq!(GgmlType::F16.block_size(), Some(1));
+        assert_eq!(GgmlType::F16.block_bytes(), Some(2));
+        assert_eq!(GgmlType::BF16.block_size(), Some(1));
+        assert_eq!(GgmlType::BF16.block_bytes(), Some(2));
+        // Q4_0 ~ Q8_0
+        assert_eq!(GgmlType::Q4_0.block_size(), Some(32));
+        assert_eq!(GgmlType::Q4_0.block_bytes(), Some(18));
+        assert_eq!(GgmlType::Q4_1.block_size(), Some(32));
+        assert_eq!(GgmlType::Q4_1.block_bytes(), Some(20));
+        assert_eq!(GgmlType::Q5_0.block_size(), Some(32));
+        assert_eq!(GgmlType::Q5_0.block_bytes(), Some(22));
+        assert_eq!(GgmlType::Q5_1.block_size(), Some(32));
+        assert_eq!(GgmlType::Q5_1.block_bytes(), Some(24));
+        assert_eq!(GgmlType::Q8_0.block_size(), Some(32));
+        assert_eq!(GgmlType::Q8_0.block_bytes(), Some(34));
+        // K-quants
+        assert_eq!(GgmlType::Q2_K.block_size(), Some(256));
+        assert_eq!(GgmlType::Q2_K.block_bytes(), Some(84));
+        assert_eq!(GgmlType::Q3_K_S.block_size(), Some(256));
+        assert_eq!(GgmlType::Q3_K_S.block_bytes(), Some(110));
+        assert_eq!(GgmlType::Q3_K_M.block_size(), Some(256));
+        assert_eq!(GgmlType::Q3_K_M.block_bytes(), Some(114));
+        assert_eq!(GgmlType::Q3_K_L.block_size(), Some(256));
+        assert_eq!(GgmlType::Q3_K_L.block_bytes(), Some(110));
+        assert_eq!(GgmlType::Q4_K.block_size(), Some(256));
+        assert_eq!(GgmlType::Q4_K.block_bytes(), Some(144));
+        assert_eq!(GgmlType::Q5_K.block_size(), Some(256));
+        assert_eq!(GgmlType::Q5_K.block_bytes(), Some(176));
+        assert_eq!(GgmlType::Q6_K.block_size(), Some(256));
+        assert_eq!(GgmlType::Q6_K.block_bytes(), Some(210));
+        assert_eq!(GgmlType::Q8_K.block_size(), Some(256));
+        assert_eq!(GgmlType::Q8_K.block_bytes(), Some(292));
+        // 未知类型
+        assert_eq!(GgmlType::Q4_2.block_size(), None);
+        assert_eq!(GgmlType::Q4_2.block_bytes(), None);
+        assert_eq!(GgmlType::Unknown(99).block_size(), None);
+        assert_eq!(GgmlType::Unknown(99).block_bytes(), None);
     }
 
     /// as_i64 覆盖全部整数变体（含边界值）。

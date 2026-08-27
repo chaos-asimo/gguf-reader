@@ -1,3 +1,4 @@
+use crate::error::{GgufError, GgufResult};
 use crate::types::GgmlType;
 
 /// 单个张量的元数据描述（不含权重数据体）。
@@ -41,6 +42,44 @@ impl TensorInfo {
         } else {
             None
         }
+    }
+
+    /// 精确计算张量数据字节数（基于 dtype block 结构）。
+    ///
+    /// - F32: n * 4
+    /// - F16/BF16: n * 2
+    /// - Q4_0: n/32 * 16
+    /// - Q4_1: n/32 * 18
+    /// - Q5_0: n/32 * 17
+    /// - Q5_1: n/32 * 19
+    /// - Q8_0: n/32 * 34
+    /// - Q2_K: n/256 * 84
+    /// - Q3_K_S/M/L: n/256 * 110
+    /// - Q4_K: n/256 * 144
+    /// - Q5_K: n/256 * 176
+    /// - Q6_K: n/256 * 210
+    /// - Q8_K: n/256 * 292
+    ///
+    /// 若 n 非 block 大小整数倍，返回 Err（InvalidTensorShape）。
+    pub fn data_size(&self) -> GgufResult<u64> {
+        let n = self.num_elements();
+        let block_size = self
+            .dtype
+            .block_size()
+            .ok_or_else(|| GgufError::InferenceError(format!("unknown dtype: {:?}", self.dtype)))?;
+        let block_bytes = self
+            .dtype
+            .block_bytes()
+            .ok_or_else(|| GgufError::InferenceError(format!("unknown dtype: {:?}", self.dtype)))?;
+        if block_size > 0 && !n.is_multiple_of(block_size) {
+            return Err(GgufError::InvalidTensorShape {
+                name: self.name.clone(),
+                elements: n,
+                block: block_size,
+            });
+        }
+        let blocks = n / block_size;
+        Ok(blocks * block_bytes)
     }
 }
 
@@ -201,5 +240,131 @@ mod tests {
         };
         assert_eq!(t.est_element_size(), Some(0));
         assert_eq!(t.est_data_size(), None); // Q4_0 非浮点，不估算
+    }
+
+    // ---- data_size() 精确计算测试 ----
+
+    #[test]
+    fn test_data_size_f32() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![4096],
+            dtype: GgmlType::F32,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 4096 * 4);
+    }
+
+    #[test]
+    fn test_data_size_f16() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![128256, 4096],
+            dtype: GgmlType::F16,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 128256 * 4096 * 2);
+    }
+
+    #[test]
+    fn test_data_size_bf16() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![100, 200],
+            dtype: GgmlType::BF16,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 100 * 200 * 2);
+    }
+
+    #[test]
+    fn test_data_size_q4_0() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![4096], // 4096 = 128 * 32
+            dtype: GgmlType::Q4_0,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 128 * 18);
+    }
+
+    #[test]
+    fn test_data_size_q8_0() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![1024], // 1024 = 32 * 32
+            dtype: GgmlType::Q8_0,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 32 * 34);
+    }
+
+    #[test]
+    fn test_data_size_q4_k() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![4096, 4096], // 16777216 = 65536 * 256
+            dtype: GgmlType::Q4_K,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 65536 * 144);
+    }
+
+    #[test]
+    fn test_data_size_q8_k() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![256],
+            dtype: GgmlType::Q8_K,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 292);
+    }
+
+    #[test]
+    fn test_data_size_non_block_multiple_err() {
+        let t = TensorInfo {
+            name: "bad".into(),
+            shape: vec![33], // 33 不是 32 的倍数
+            dtype: GgmlType::Q4_0,
+            offset: 0,
+        };
+        assert!(matches!(
+            t.data_size(),
+            Err(GgufError::InvalidTensorShape { .. })
+        ));
+    }
+
+    #[test]
+    fn test_data_size_unknown_dtype_err() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![100],
+            dtype: GgmlType::Q4_2, // 不支持的类型
+            offset: 0,
+        };
+        assert!(matches!(t.data_size(), Err(GgufError::InferenceError(_))));
+    }
+
+    #[test]
+    fn test_data_size_q2_k() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![512], // 512 = 2 * 256
+            dtype: GgmlType::Q2_K,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 2 * 84);
+    }
+
+    #[test]
+    fn test_data_size_q6_k() {
+        let t = TensorInfo {
+            name: "t".into(),
+            shape: vec![256],
+            dtype: GgmlType::Q6_K,
+            offset: 0,
+        };
+        assert_eq!(t.data_size().unwrap(), 210);
     }
 }

@@ -8,3 +8,11 @@
 .idea/
 .vscode/
 *.swp
+
+# 临时文件
+*.log
+*.txt
+help.txt
+p[0-9].txt
+ps.utf8.ps1
+__pycache__/

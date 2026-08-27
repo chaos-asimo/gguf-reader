@@ -1,6 +1,5 @@
 use clap::Parser;
 use gguf::GgufError;
-use serde_json::{json, Value as J};
 use std::process::ExitCode;
 
 /// 查看 GGUF 大模型文件的元数据（文件头、KV 键值、张量描述符）。
@@ -37,10 +36,20 @@ struct Args {
     /// 静默模式：不显示张量与 KV，仅摘要
     #[arg(short = 'q', long)]
     quiet: bool,
+
+    /// 按 token id 查词表（可多次）
+    #[arg(short = 'T', long = "token-id")]
+    token_ids: Vec<u32>,
+
+    /// 按 token 字符串查词表（可多次）
+    #[arg(short = 'S', long = "token-str")]
+    token_strs: Vec<String>,
+
+    /// 打印 BPE merges 中匹配子串的条目（可多次）
+    #[arg(long = "merge-contains")]
+    merge_contains: Vec<String>,
 }
 
-/// JSON 输出中数组截断阈值。
-const JSON_ARRAY_LIMIT: usize = 1000;
 /// 文本输出中张量默认截断数。
 const TENSOR_TEXT_LIMIT: usize = 50;
 
@@ -68,12 +77,73 @@ fn exit_code_for(e: &GgufError) -> u8 {
 fn run(args: &Args) -> Result<(), GgufError> {
     let file = gguf::GgufFile::from_path(&args.path)?;
 
+    // 词表查询（优先级最高）
+    if !args.token_ids.is_empty() || !args.token_strs.is_empty() || !args.merge_contains.is_empty() {
+        print_token_lookup(&file, args);
+        return Ok(());
+    }
+
+    #[cfg(feature = "json")]
     if args.json {
         print_json(&file, args);
     } else {
         print_text(&file, args);
     }
+    #[cfg(not(feature = "json"))]
+    print_text(&file, args);
     Ok(())
+}
+
+/// 把字符串转成可见转义形式（非 ASCII 显示为 \u{...} / \x..）。
+fn visible(s: &str) -> String {
+    let mut out = String::new();
+    for c in s.chars() {
+        let cp = c as u32;
+        if cp >= 0x20 && cp <= 0x7e {
+            out.push(c);
+        } else if cp < 0x80 {
+            out.push_str(&format!("\\x{:02x}", cp));
+        } else {
+            out.push_str(&format!("\\u{{{:04x}}}", cp));
+        }
+    }
+    out
+}
+
+fn print_token_lookup(file: &gguf::GgufFile, args: &Args) {
+    let toks = file
+        .get("tokenizer.ggml.tokens")
+        .and_then(|v| v.as_array())
+        .expect("missing tokenizer.ggml.tokens");
+
+    for id in &args.token_ids {
+        if let Some(v) = toks.data.get(*id as usize).and_then(|x| x.as_str()) {
+            println!("id={id} -> [{}] (utf8len={})", visible(v), v.len());
+        } else {
+            println!("id={id} -> (out of range)");
+        }
+    }
+    for s in &args.token_strs {
+        match toks.data.iter().position(|v| v.as_str() == Some(s.as_str())) {
+            Some(pos) => println!("str=[{}] -> id={pos}", visible(s)),
+            None => println!("str=[{}] -> (not found)", visible(s)),
+        }
+    }
+
+    // 打印 merges 中包含指定子串的条目
+    if !args.merge_contains.is_empty() {
+        let merges = file
+            .get("tokenizer.ggml.merges")
+            .and_then(|v| v.as_array())
+            .expect("missing tokenizer.ggml.merges");
+        for (i, v) in merges.data.iter().enumerate() {
+            if let Some(s) = v.as_str() {
+                if args.merge_contains.iter().any(|m| s.contains(m.as_str())) {
+                    println!("merge[{i}]: [{}]", visible(s));
+                }
+            }
+        }
+    }
 }
 
 // ---------------- 文本输出 ----------------
@@ -176,8 +246,12 @@ fn format_shape(shape: &[u64]) -> String {
 
 // ---------------- JSON 输出 ----------------
 
+#[cfg(feature = "json")]
 fn print_json(file: &gguf::GgufFile, args: &Args) {
-    let kv_obj = build_kv_json(file, args);
+    use serde_json::{json, Value as J};
+    const JSON_ARRAY_LIMIT: usize = 1000;
+
+    let kv_obj = build_kv_json(file, args, JSON_ARRAY_LIMIT);
     let tensors_arr: Vec<J> = file
         .tensors
         .iter()
@@ -216,13 +290,15 @@ fn print_json(file: &gguf::GgufFile, args: &Args) {
     }
 }
 
-fn build_kv_json(file: &gguf::GgufFile, args: &Args) -> J {
+#[cfg(feature = "json")]
+fn build_kv_json(file: &gguf::GgufFile, args: &Args, array_limit: usize) -> serde_json::Value {
+    use serde_json::{json, Value as J};
     let mut map = serde_json::Map::new();
     for (k, v) in &file.kv {
         if !args.keys.is_empty() && !args.keys.iter().any(|key| key == k) {
             continue;
         }
-        let val = gguf::value_to_json(v, Some(JSON_ARRAY_LIMIT));
+        let val = gguf::value_to_json(v, Some(array_limit));
         let entry = json!({
             "type": v.value_type().to_string(),
             "value": val,

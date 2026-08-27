@@ -5,7 +5,14 @@
 //! - 键值元数据（全部 13 种 `gguf_type`，含数组）
 //! - 张量描述符（名称 / 形状 / 类型 / 数据偏移）
 //!
-//! **不读取张量权重数据体**，因此适合处理数十 GB 的大模型文件。
+//! 并扩展为**完整的 LLM 推理框架**：
+//! - 量化反量化（Q4_0~Q8_K / F16 / BF16 / F32）
+//! - 基础算子（GEMM / RMSNorm / Softmax / SiLU / RoPE）
+//! - 模型 forward（llama / qwen2 / mistral）
+//! - BPE 分词器
+//! - 采样器（temperature / top-k / top-p / min-p / repeat penalty）
+//! - KV-cache
+//! - 推理引擎（prefill + decode + 流式生成）
 //!
 //! ## 快速开始
 //!
@@ -26,6 +33,7 @@ pub mod cursor;
 pub mod error;
 pub mod file;
 pub mod header;
+pub mod infer;
 pub mod tensor;
 pub mod types;
 

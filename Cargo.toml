@@ -15,15 +15,35 @@ path = "src/lib.rs"
 name = "gguf-dump"
 path = "src/bin/gguf_dump.rs"
 
+[[bin]]
+name = "gguf-infer"
+path = "src/bin/gguf_infer.rs"
+
+[[bin]]
+name = "gguf-gui"
+path = "src/bin/gguf_gui.rs"
+required-features = ["gui"]
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 memmap2 = { version = "0.9", optional = true }
 serde_json = { version = "1", optional = true }
+rand = "0.8"
+rayon = { version = "1", optional = true }
+# GUI（egui / eframe / rfd 文件对话框）
+eframe = { version = "0.29", optional = true }
+egui = { version = "0.29", optional = true }
+rfd = { version = "0.15", optional = true }
+# Windows: 控制台宽字符 I/O（ReadConsoleW/WriteConsoleW）+ UTF-8 代码页
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
 
 [features]
-default = ["mmap", "json"]
+default = ["mmap", "json", "parallel"]
 mmap = ["dep:memmap2"]
 json = ["dep:serde_json"]
+parallel = ["dep:rayon"]
+gui = ["dep:eframe", "dep:egui", "dep:rfd"]
 
 [dev-dependencies]
 tempfile = "3"

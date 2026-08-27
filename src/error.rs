@@ -27,6 +27,32 @@ pub enum GgufError {
     InvalidTensorDim { name: String, dim: i64 },
     /// 非法的计数字段（n_kv / n_tensors 为负或超大）
     InvalidCount { field: &'static str, value: i64 },
+    /// 张量形状非 block 整数倍（反量化时）
+    InvalidTensorShape {
+        name: String,
+        elements: u64,
+        block: u64,
+    },
+    /// 模型加载时张量缺失
+    MissingTensor { name: String, kind: &'static str },
+    /// 不支持的模型架构
+    UnsupportedArchitecture(String),
+    /// 分词器 KV 缺失或格式错误
+    TokenizerError(String),
+    /// 反量化失败（数据截断等）
+    DequantError {
+        dtype: String,
+        expected: u64,
+        actual: u64,
+    },
+    /// KV cache 溢出
+    KvCacheOverflow {
+        layer: usize,
+        seq_len: usize,
+        max_seq: usize,
+    },
+    /// 推理内部错误
+    InferenceError(String),
     /// 其他
     Other(String),
 }
@@ -64,6 +90,38 @@ impl fmt::Display for GgufError {
             GgufError::InvalidCount { field, value } => {
                 write!(f, "invalid count for field '{field}': {value}")
             }
+            GgufError::InvalidTensorShape {
+                name,
+                elements,
+                block,
+            } => write!(
+                f,
+                "tensor '{name}' has {elements} elements which is not a multiple of block size {block}"
+            ),
+            GgufError::MissingTensor { name, kind } => {
+                write!(f, "missing tensor '{name}' (kind: {kind})")
+            }
+            GgufError::UnsupportedArchitecture(arch) => {
+                write!(f, "unsupported model architecture: '{arch}'")
+            }
+            GgufError::TokenizerError(msg) => write!(f, "tokenizer error: {msg}"),
+            GgufError::DequantError {
+                dtype,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "dequantization error for {dtype}: expected {expected} bytes but got {actual}"
+            ),
+            GgufError::KvCacheOverflow {
+                layer,
+                seq_len,
+                max_seq,
+            } => write!(
+                f,
+                "KV cache overflow at layer {layer}: seq_len {seq_len} > max_seq {max_seq}"
+            ),
+            GgufError::InferenceError(msg) => write!(f, "inference error: {msg}"),
             GgufError::Other(msg) => write!(f, "{msg}"),
         }
     }
@@ -90,6 +148,53 @@ pub type GgufResult<T> = Result<T, GgufError>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 新增推理相关错误变体的 Display 文本。
+    #[test]
+    fn test_display_inference_variants() {
+        let e = GgufError::InvalidTensorShape {
+            name: "t".into(),
+            elements: 33,
+            block: 32,
+        };
+        assert!(e.to_string().contains("33"));
+        assert!(e.to_string().contains("32"));
+        assert!(e.to_string().contains("not a multiple"));
+
+        let e = GgufError::MissingTensor {
+            name: "w".into(),
+            kind: "TokenEmbedding",
+        };
+        assert!(e.to_string().contains("w"));
+        assert!(e.to_string().contains("TokenEmbedding"));
+
+        let e = GgufError::UnsupportedArchitecture("bert".into());
+        assert!(e.to_string().contains("bert"));
+
+        let e = GgufError::TokenizerError("no tokens".into());
+        assert!(e.to_string().contains("no tokens"));
+
+        let e = GgufError::DequantError {
+            dtype: "Q4_0".into(),
+            expected: 16,
+            actual: 8,
+        };
+        assert!(e.to_string().contains("Q4_0"));
+        assert!(e.to_string().contains("16"));
+        assert!(e.to_string().contains("8"));
+
+        let e = GgufError::KvCacheOverflow {
+            layer: 3,
+            seq_len: 100,
+            max_seq: 50,
+        };
+        assert!(e.to_string().contains("3"));
+        assert!(e.to_string().contains("100"));
+        assert!(e.to_string().contains("50"));
+
+        let e = GgufError::InferenceError("boom".into());
+        assert!(e.to_string().contains("boom"));
+    }
 
     /// 各错误变体的 Display 文本包含关键信息。
     #[test]
